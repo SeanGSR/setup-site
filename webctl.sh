@@ -1934,12 +1934,45 @@ rename_domain() {
         warn "WordPress URLs updated. Run Certbot again if you had HTTPS."
     fi
 
+    # Handle SSL: strip old cert references if they don't exist for new domain
+    local had_ssl=false
+    if [[ -f "$NEW_NGINX" ]] && grep -q "ssl_certificate" "$NEW_NGINX" 2>/dev/null; then
+        if [[ ! -f "/etc/letsencrypt/live/${NEW_DOMAIN}/fullchain.pem" ]]; then
+            had_ssl=true
+            info "Temporarily removing SSL config (old cert doesn't match new domain)..."
+            # Comment out SSL cert lines and switch 443 to 80
+            sed -i 's|^\(\s*ssl_certificate\)|# \1|' "$NEW_NGINX"
+            sed -i 's|^\(\s*ssl_certificate_key\)|# \1|' "$NEW_NGINX"
+            sed -i 's|listen 443 ssl|listen 80|g' "$NEW_NGINX"
+            sed -i 's|listen \[::\]:443 ssl|listen [::]:80|g' "$NEW_NGINX"
+            # Remove ssl-related includes (managed by certbot)
+            sed -i '/managed by Certbot/d' "$NEW_NGINX"
+            sed -i '/include.*options-ssl/d' "$NEW_NGINX"
+            sed -i '/ssl_dhparam/d' "$NEW_NGINX"
+            # Remove the certbot redirect block if present
+            sed -i '/if.*server_name.*redirect/,/}/d' "$NEW_NGINX" 2>/dev/null || true
+            log "SSL references removed from nginx config"
+        fi
+    fi
+
     # Reload nginx
     if nginx -t 2>&1; then
         systemctl reload nginx
         log "Nginx reloaded"
     else
-        error "Nginx config test failed after rename."
+        warn "Nginx config test failed. Attempting to fix..."
+        # Last resort: strip all SSL if nginx still fails
+        sed -i 's|^\(\s*ssl_certificate\)|# \1|' "$NEW_NGINX" 2>/dev/null
+        sed -i 's|^\(\s*ssl_certificate_key\)|# \1|' "$NEW_NGINX" 2>/dev/null
+        sed -i 's|listen 443 ssl|listen 80|g' "$NEW_NGINX" 2>/dev/null
+        sed -i 's|listen \[::\]:443 ssl|listen [::]:80|g' "$NEW_NGINX" 2>/dev/null
+        if nginx -t 2>&1; then
+            systemctl reload nginx
+            log "Nginx reloaded (SSL stripped)"
+            had_ssl=true
+        else
+            error "Nginx config test failed after rename. Check: ${NEW_NGINX}"
+        fi
     fi
 
     # Update /etc/hosts if old domain was local
@@ -1951,9 +1984,23 @@ rename_domain() {
         log "Updated /etc/hosts: ${OLD_DOMAIN} -> ${NEW_DOMAIN}"
     fi
 
-    # New SSL cert (skip for local domains)
+    # Request new SSL cert if the old domain had SSL
     if ! is_local_domain "$NEW_DOMAIN"; then
-        if confirm "Request a new SSL certificate for ${NEW_DOMAIN}?"; then
+        if $had_ssl; then
+            info "The old domain had SSL. A new certificate is needed for ${NEW_DOMAIN}."
+            if confirm "Request a new SSL certificate now?"; then
+                echo -ne "  ${CYAN}${ARROW}${NC} Email for SSL: "
+                read -r SSL_EMAIL
+                validate_email "$SSL_EMAIL"
+                certbot --nginx --non-interactive --agree-tos --email "$SSL_EMAIL" \
+                    --redirect -d "${NEW_DOMAIN}" -d "www.${NEW_DOMAIN}" 2>/dev/null || \
+                certbot --nginx --non-interactive --agree-tos --email "$SSL_EMAIL" \
+                    --redirect -d "${NEW_DOMAIN}" 2>/dev/null || \
+                warn "SSL request failed. Try manually: sudo certbot --nginx -d ${NEW_DOMAIN}"
+            else
+                warn "Site is running on HTTP only. Run later: sudo certbot --nginx -d ${NEW_DOMAIN}"
+            fi
+        elif confirm "Request a new SSL certificate for ${NEW_DOMAIN}?"; then
             echo -ne "  ${CYAN}${ARROW}${NC} Email for SSL: "
             read -r SSL_EMAIL
             validate_email "$SSL_EMAIL"
@@ -1965,10 +2012,17 @@ rename_domain() {
         fi
     fi
 
-    log "Domain renamed: ${OLD_DOMAIN} ${ARROW} ${NEW_DOMAIN}"
-    if ! is_local_domain "$OLD_DOMAIN" && [[ -d "/etc/letsencrypt/live/${OLD_DOMAIN}" ]]; then
-        info "Clean up old cert: ${DIM}sudo certbot delete --cert-name ${OLD_DOMAIN}${NC}"
+    # Clean up old cert
+    if [[ -d "/etc/letsencrypt/live/${OLD_DOMAIN}" ]]; then
+        if confirm "Delete old SSL certificate for ${OLD_DOMAIN}?"; then
+            certbot delete --cert-name "${OLD_DOMAIN}" --non-interactive 2>/dev/null || true
+            log "Old certificate for ${OLD_DOMAIN} deleted"
+        else
+            info "Clean up later: ${DIM}sudo certbot delete --cert-name ${OLD_DOMAIN}${NC}"
+        fi
     fi
+
+    log "Domain renamed: ${OLD_DOMAIN} ${ARROW} ${NEW_DOMAIN}"
 }
 
 # ── User Store Helpers ───────────────────────────────────────
