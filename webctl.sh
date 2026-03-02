@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================
-#  WEB SETUP SCRIPT v2.0
+#  WEB SETUP SCRIPT v2.1
 #  Manages: Static, WordPress, PHP, Reverse Proxy sites
 #  Stores sites in: /home/$SUDO_USER/sites/
 # ============================================================
@@ -349,7 +349,7 @@ pkg_install() {
     local pkg="$1"
     case "$DISTRO_FAMILY" in
         debian)
-            apt install -y "$pkg" 2>&1 | tee -a "$LOG_FILE"
+            DEBIAN_FRONTEND=noninteractive apt install -y "$pkg" 2>&1 | tee -a "$LOG_FILE"
             ;;
         arch)
             pacman -S --noconfirm --needed "$pkg" 2>&1 | tee -a "$LOG_FILE"
@@ -788,8 +788,8 @@ define('FS_METHOD', 'direct');" "${SITE_DIR}/public/wp-config.php"
     fi
 
     # Set correct permissions
-    find "${SITE_DIR}/public" -type d -exec chmod 755 {} \;
-    find "${SITE_DIR}/public" -type f -exec chmod 644 {} \;
+    find "${SITE_DIR}/public" -type d -exec chmod 755 {} +
+    find "${SITE_DIR}/public" -type f -exec chmod 644 {} +
     chown -R ${WEB_USER}:${WEB_USER} "${SITE_DIR}/public"
     log "WordPress installed successfully"
 }
@@ -872,7 +872,7 @@ php_value[memory_limit] = 256M
 
 ; Security
 php_admin_value[open_basedir] = ${SITE_DIR}/public:/tmp
-php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
+php_admin_value[disable_functions] = passthru,shell_exec,system
 EOF
 
     systemctl restart "${PHP_FPM_SERVICE}" || error "Failed to restart PHP-FPM. Check the pool config."
@@ -909,7 +909,7 @@ server {
     add_header X-XSS-Protection "1; mode=block" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
-    add_header Content-Security-Policy "default-src 'self'" always;
+    add_header Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:" always;
 
     location / {
         try_files \$uri \$uri/ =404;
@@ -1368,8 +1368,9 @@ define('FS_METHOD', 'direct');" "${UPLOAD_DIR}/wp-config.php"
     # sshd_config Match User block
     if grep -q "Match User ${ACCESS_USER}" /etc/ssh/sshd_config; then
         warn "Removing old sshd entry for ${ACCESS_USER}."
-        sed -i "/# SFTP jail.*${ACCESS_USER}/,+5d" /etc/ssh/sshd_config
-        sed -i "/Match User ${ACCESS_USER}/,+4d" /etc/ssh/sshd_config
+        # Remove from comment line through the Match block (up to next Match/EOF)
+        sed -i "/# SFTP jail.*${ACCESS_USER}/d" /etc/ssh/sshd_config
+        sed -i "/^Match User ${ACCESS_USER}$/,/^Match \|^$/{ /^Match User ${ACCESS_USER}$/d; /^$/d; /^[[:space:]]/d; }" /etc/ssh/sshd_config
     fi
 
     cat >> /etc/ssh/sshd_config <<EOF
@@ -1730,15 +1731,26 @@ toggle_ssl() {
             echo -ne "  ${CYAN}${ARROW}${NC} Email for SSL: "
             read -r SSL_EMAIL
             validate_email "$SSL_EMAIL"
+            local ssl_ok=false
+            # Try with www first
             certbot --nginx --non-interactive --agree-tos --email "$SSL_EMAIL" \
                 --redirect -d "${domain}" -d "www.${domain}" 2>&1 | tee -a "$LOG_FILE" &
-            spinner $! "Requesting SSL certificate..." || \
-            certbot --nginx --non-interactive --agree-tos --email "$SSL_EMAIL" \
-                --redirect -d "${domain}" 2>&1 | tee -a "$LOG_FILE" &
-            spinner $! "Requesting SSL (without www)..." || \
-            warn "SSL request failed. Try: sudo certbot --nginx -d ${domain}"
-            systemctl reload nginx 2>/dev/null || true
-            log "SSL setup complete for ${domain}"
+            if spinner $! "Requesting SSL certificate..."; then
+                ssl_ok=true
+            else
+                # Retry without www subdomain
+                certbot --nginx --non-interactive --agree-tos --email "$SSL_EMAIL" \
+                    --redirect -d "${domain}" 2>&1 | tee -a "$LOG_FILE" &
+                if spinner $! "Requesting SSL (without www)..."; then
+                    ssl_ok=true
+                fi
+            fi
+            if $ssl_ok; then
+                systemctl reload nginx 2>/dev/null || true
+                log "SSL setup complete for ${domain}"
+            else
+                warn "SSL request failed. Try: sudo certbot --nginx -d ${domain}"
+            fi
         fi
     fi
 }
@@ -1917,7 +1929,9 @@ rename_domain() {
     fi
 
     # Move site directory
-    mv "$OLD_DIR" "$NEW_DIR"
+    if ! mv "$OLD_DIR" "$NEW_DIR"; then
+        error "Failed to move site directory from ${OLD_DIR} to ${NEW_DIR}. Check permissions and disk space."
+    fi
     log "Site directory moved to ${NEW_DIR}"
 
     # Update nginx config
@@ -1947,8 +1961,12 @@ rename_domain() {
     if [[ -f "$WP_CONF" ]]; then
         sed -i "s|${OLD_DOMAIN}|${NEW_DOMAIN}|g" "$WP_CONF" 2>/dev/null || true
         local DB_NAME="${OLD_DOMAIN//[.-]/_}"
-        mysql -e "UPDATE \`${DB_NAME}\`.wp_options SET option_value='https://${NEW_DOMAIN}' WHERE option_name='siteurl';" 2>/dev/null || true
-        mysql -e "UPDATE \`${DB_NAME}\`.wp_options SET option_value='https://${NEW_DOMAIN}' WHERE option_name='home';" 2>/dev/null || true
+        # Detect table prefix from wp-config.php (default: wp_)
+        local WP_PREFIX
+        WP_PREFIX=$(grep -oP "\\\$table_prefix\s*=\s*['\"]\\K[^'\"]*" "$WP_CONF" 2>/dev/null || echo "wp_")
+        [[ -z "$WP_PREFIX" ]] && WP_PREFIX="wp_"
+        mysql -e "UPDATE \`${DB_NAME}\`.${WP_PREFIX}options SET option_value='https://${NEW_DOMAIN}' WHERE option_name='siteurl';" 2>/dev/null || true
+        mysql -e "UPDATE \`${DB_NAME}\`.${WP_PREFIX}options SET option_value='https://${NEW_DOMAIN}' WHERE option_name='home';" 2>/dev/null || true
         warn "WordPress URLs updated. Run Certbot again if you had HTTPS."
     fi
 
@@ -2224,8 +2242,9 @@ define('FS_METHOD', 'direct');" "${SITE_DIR}/public/wp-config.php"
     # sshd_config Match User block
     if grep -q "Match User ${ACCESS_USER}" /etc/ssh/sshd_config; then
         warn "Removing old sshd entry for ${ACCESS_USER}."
-        sed -i "/# SFTP jail.*${ACCESS_USER}/,+5d" /etc/ssh/sshd_config
-        sed -i "/Match User ${ACCESS_USER}/,+4d" /etc/ssh/sshd_config
+        # Remove from comment line through the Match block (up to next Match/EOF)
+        sed -i "/# SFTP jail.*${ACCESS_USER}/d" /etc/ssh/sshd_config
+        sed -i "/^Match User ${ACCESS_USER}$/,/^Match \|^$/{ /^Match User ${ACCESS_USER}$/d; /^$/d; /^[[:space:]]/d; }" /etc/ssh/sshd_config
     fi
 
     cat >> /etc/ssh/sshd_config <<EOF
@@ -2345,8 +2364,8 @@ delete_site_user() {
 
     # Remove sshd_config block
     if grep -q "Match User ${DEL_USER}" /etc/ssh/sshd_config; then
-        sed -i "/# SFTP jail.*${DEL_USER}/,+5d" /etc/ssh/sshd_config
-        sed -i "/Match User ${DEL_USER}/,+4d" /etc/ssh/sshd_config
+        sed -i "/# SFTP jail.*${DEL_USER}/d" /etc/ssh/sshd_config
+        sed -i "/^Match User ${DEL_USER}$/,/^Match \|^$/{ /^Match User ${DEL_USER}$/d; /^$/d; /^[[:space:]]/d; }" /etc/ssh/sshd_config
         if sshd -t 2>/dev/null; then
             systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null
             log "sshd: removed jail entry for ${DEL_USER}"
@@ -2399,8 +2418,8 @@ delete_site() {
             uname=$(grep "Username:" "$f" | awk '{print $2}')
             if [[ -n "$uname" ]]; then
                 # Remove sshd config
-                sed -i "/# SFTP jail.*${uname}/,+5d" /etc/ssh/sshd_config 2>/dev/null
-                sed -i "/Match User ${uname}/,+4d" /etc/ssh/sshd_config 2>/dev/null
+                sed -i "/# SFTP jail.*${uname}/d" /etc/ssh/sshd_config 2>/dev/null
+                sed -i "/^Match User ${uname}$/,/^Match \|^$/{ /^Match User ${uname}$/d; /^$/d; /^[[:space:]]/d; }" /etc/ssh/sshd_config 2>/dev/null
                 # Remove system user
                 userdel "$uname" 2>/dev/null && log "Removed user ${uname}" || true
             fi
@@ -2475,12 +2494,20 @@ backup_site() {
         local db_name db_user db_pass
         db_name=$(grep "DB Name:" "${site_dir}/db-credentials.txt" 2>/dev/null | awk '{print $NF}')
         db_user=$(grep "DB User:" "${site_dir}/db-credentials.txt" 2>/dev/null | awk '{print $NF}')
-        db_pass=$(grep "DB Pass:" "${site_dir}/db-credentials.txt" 2>/dev/null | awk '{print $NF}')
+        db_pass=$(grep "DB Password:" "${site_dir}/db-credentials.txt" 2>/dev/null | awk '{print $NF}')
 
         if [[ -n "$db_name" ]] && command -v mysqldump &>/dev/null; then
             db_dump="${site_dir}/backups/db-${timestamp}.sql"
             info "Dumping database ${BOLD}${db_name}${NC}..."
-            if mysqldump --single-transaction -u"${db_user}" -p"${db_pass}" "${db_name}" > "$db_dump" 2>/dev/null; then
+            local my_cnf
+            my_cnf=$(mktemp)
+            chmod 600 "$my_cnf"
+            cat > "$my_cnf" <<MYCNF
+[client]
+user=${db_user}
+password=${db_pass}
+MYCNF
+            if mysqldump --defaults-extra-file="$my_cnf" --single-transaction "${db_name}" > "$db_dump" 2>/dev/null; then
                 local dump_size
                 dump_size=$(du -sh "$db_dump" 2>/dev/null | awk '{print $1}')
                 log "Database dumped (${dump_size}): ${db_dump}"
@@ -2489,6 +2516,7 @@ backup_site() {
                 rm -f "$db_dump"
                 db_dump=""
             fi
+            rm -f "$my_cnf"
         fi
     fi
 
@@ -2615,7 +2643,7 @@ restore_site() {
         local db_name db_user db_pass
         db_name=$(grep "DB Name:" "${site_dir}/db-credentials.txt" 2>/dev/null | awk '{print $NF}')
         db_user=$(grep "DB User:" "${site_dir}/db-credentials.txt" 2>/dev/null | awk '{print $NF}')
-        db_pass=$(grep "DB Pass:" "${site_dir}/db-credentials.txt" 2>/dev/null | awk '{print $NF}')
+        db_pass=$(grep "DB Password:" "${site_dir}/db-credentials.txt" 2>/dev/null | awk '{print $NF}')
 
         # Find the most recent DB dump inside the restored backup
         local latest_dump
@@ -2623,12 +2651,17 @@ restore_site() {
 
         if [[ -n "$latest_dump" ]] && [[ -n "$db_name" ]]; then
             info "Restoring database ${BOLD}${db_name}${NC}..."
-            if mysql -u"${db_user}" -p"${db_pass}" "${db_name}" < "$latest_dump" 2>/dev/null; then
+            local my_cnf
+            my_cnf=$(mktemp)
+            chmod 600 "$my_cnf"
+            printf '[client]\nuser=%s\npassword=%s\n' "$db_user" "$db_pass" > "$my_cnf"
+            if mysql --defaults-extra-file="$my_cnf" "${db_name}" < "$latest_dump" 2>/dev/null; then
                 log "Database restored from $(basename "$latest_dump")"
                 rm -f "$latest_dump"
             else
                 warn "Database restore failed. You may need to restore manually."
             fi
+            rm -f "$my_cnf"
         fi
     fi
 
@@ -2751,7 +2784,13 @@ setup_backup_schedule() {
     # Ask for retention
     echo -ne "  ${CYAN}${ARROW}${NC} Keep last how many backups per site? ${DIM}[${BACKUP_RETENTION}]${NC}: "
     read -r ret_input
-    [[ -n "$ret_input" ]] && BACKUP_RETENTION="$ret_input"
+    if [[ -n "$ret_input" ]]; then
+        if [[ "$ret_input" =~ ^[0-9]+$ ]] && (( ret_input >= 1 && ret_input <= 365 )); then
+            BACKUP_RETENTION="$ret_input"
+        else
+            warn "Invalid retention value. Must be 1-365. Using default: ${BACKUP_RETENTION}"
+        fi
+    fi
 
     # Create the backup script
     info "Creating backup script..."
@@ -2783,7 +2822,9 @@ cleanup_old() {
 sync_remote() {
     local backup_file="\$1"
     [[ -f "\$BACKUP_REMOTE_CONF" ]] || return 0
-    source "\$BACKUP_REMOTE_CONF"
+    REMOTE_TYPE=\$(grep -m1 '^REMOTE_TYPE=' "\$BACKUP_REMOTE_CONF" | cut -d= -f2-)
+    REMOTE_DEST=\$(grep -m1 '^REMOTE_DEST=' "\$BACKUP_REMOTE_CONF" | cut -d= -f2-)
+    [[ -z "\$REMOTE_TYPE" || -z "\$REMOTE_DEST" ]] && return 0
     case "\$REMOTE_TYPE" in
         rclone)
             if command -v rclone &>/dev/null; then
@@ -2812,10 +2853,14 @@ for site_dir in "\${SITES_ROOT}"/*/; do
     if [[ -f "\${site_dir}/db-credentials.txt" ]]; then
         db_name=\$(grep "DB Name:" "\${site_dir}/db-credentials.txt" | awk '{print \$NF}')
         db_user=\$(grep "DB User:" "\${site_dir}/db-credentials.txt" | awk '{print \$NF}')
-        db_pass=\$(grep "DB Pass:" "\${site_dir}/db-credentials.txt" | awk '{print \$NF}')
+        db_pass=\$(grep "DB Password:" "\${site_dir}/db-credentials.txt" | awk '{print \$NF}')
         if [[ -n "\$db_name" ]] && command -v mysqldump &>/dev/null; then
             mkdir -p "\${site_dir}/backups"
-            mysqldump --single-transaction -u"\${db_user}" -p"\${db_pass}" "\${db_name}" > "\${site_dir}/backups/db-\${timestamp}.sql" 2>/dev/null
+            local my_cnf=\$(mktemp)
+            chmod 600 "\$my_cnf"
+            printf '[client]\nuser=%s\npassword=%s\n' "\$db_user" "\$db_pass" > "\$my_cnf"
+            mysqldump --defaults-extra-file="\$my_cnf" --single-transaction "\${db_name}" > "\${site_dir}/backups/db-\${timestamp}.sql" 2>/dev/null
+            rm -f "\$my_cnf"
             log "DB dump: \${db_name}"
         fi
     fi
@@ -2887,8 +2932,7 @@ EOF
 setup_remote_sync() {
     header "Remote Backup Sync"
 
-    if [[ -f "$BACKUP_REMOTE_CONF" ]]; then
-        source "$BACKUP_REMOTE_CONF"
+    if parse_remote_conf; then
         info "Current remote config: ${BOLD}${REMOTE_TYPE}${NC} -> ${REMOTE_DEST}"
         echo
         if ! confirm "Reconfigure remote sync?"; then
@@ -3003,18 +3047,23 @@ EOF
     echo
     echo -e "  ${GREEN}${BOLD}Remote Sync Configured${NC}"
     separator
-    source "$BACKUP_REMOTE_CONF"
+    parse_remote_conf
     echo -e "    ${BOLD}Method${NC}      | ${REMOTE_TYPE}"
     echo -e "    ${BOLD}Destination${NC} | ${REMOTE_DEST}"
     separator
 }
 
+parse_remote_conf() {
+    # Safely parse key=value config without sourcing (prevents code injection)
+    [[ -f "$BACKUP_REMOTE_CONF" ]] || return 1
+    REMOTE_TYPE=$(grep -m1 '^REMOTE_TYPE=' "$BACKUP_REMOTE_CONF" 2>/dev/null | cut -d= -f2-)
+    REMOTE_DEST=$(grep -m1 '^REMOTE_DEST=' "$BACKUP_REMOTE_CONF" 2>/dev/null | cut -d= -f2-)
+    [[ -n "$REMOTE_TYPE" && -n "$REMOTE_DEST" ]]
+}
+
 sync_backup_remote() {
     local backup_file="$1"
-    [[ -f "$BACKUP_REMOTE_CONF" ]] || return 0
-
-    source "$BACKUP_REMOTE_CONF"
-    [[ -z "$REMOTE_TYPE" || -z "$REMOTE_DEST" ]] && return 0
+    parse_remote_conf || return 0
 
     info "Syncing to remote (${REMOTE_TYPE})..."
     case "$REMOTE_TYPE" in
