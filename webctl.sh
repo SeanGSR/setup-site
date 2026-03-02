@@ -1708,6 +1708,24 @@ toggle_ssl() {
     else
         # No SSL — offer to set up
         info "No SSL certificate found for ${domain}."
+
+        # Strip broken SSL references from nginx config if they exist
+        local nginx_conf="${NGINX_SITES}/${domain}"
+        if [[ -f "$nginx_conf" ]] && grep -q 'ssl_certificate' "$nginx_conf"; then
+            warn "Nginx config has SSL references but no certificate exists. Fixing..."
+            sed -i 's|listen 443 ssl;|listen 80;|g' "$nginx_conf"
+            sed -i 's|listen \[::\]:443 ssl;|listen [::]:80;|g' "$nginx_conf"
+            sed -i '/^\s*ssl_certificate/d' "$nginx_conf"
+            sed -i '/^\s*ssl_certificate_key/d' "$nginx_conf"
+            if nginx -t &>/dev/null; then
+                systemctl reload nginx 2>/dev/null || true
+                log "Stripped broken SSL references from nginx config for ${domain}"
+            else
+                warn "Nginx config still invalid after cleanup. Check manually."
+                return
+            fi
+        fi
+
         if confirm "Set up SSL with Let's Encrypt?"; then
             echo -ne "  ${CYAN}${ARROW}${NC} Email for SSL: "
             read -r SSL_EMAIL
