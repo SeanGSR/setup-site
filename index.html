@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Setup Script - Nginx Site Manager</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #0a0e17;
+            --bg-card: #111827;
+            --bg-terminal: #0d1117;
+            --border: #1e293b;
+            --text: #e2e8f0;
+            --text-dim: #64748b;
+            --accent: #818cf8;
+            --accent-glow: rgba(129, 140, 248, 0.15);
+            --green: #34d399;
+            --yellow: #fbbf24;
+            --red: #f87171;
+            --cyan: #22d3ee;
+            --magenta: #c084fc;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .mono { font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; }
+
+        /* Gradient mesh background */
+        .bg-mesh {
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            background:
+                radial-gradient(ellipse 80% 50% at 20% 20%, rgba(99, 102, 241, 0.08), transparent),
+                radial-gradient(ellipse 60% 40% at 80% 80%, rgba(139, 92, 246, 0.06), transparent),
+                radial-gradient(ellipse 50% 50% at 50% 50%, rgba(34, 211, 238, 0.04), transparent);
+        }
+
+        /* Nav */
+        nav {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            backdrop-filter: blur(20px);
+            background: rgba(10, 14, 23, 0.8);
+            border-bottom: 1px solid var(--border);
+            z-index: 100;
+        }
+
+        .nav-logo {
+            font-weight: 700;
+            font-size: 1.1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .nav-logo span { color: var(--accent); }
+
+        .nav-links { display: flex; gap: 2rem; list-style: none; }
+        .nav-links a {
+            color: var(--text-dim);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: color 0.2s;
+        }
+        .nav-links a:hover { color: var(--text); }
+
+        .nav-btn {
+            background: var(--accent);
+            color: #fff;
+            padding: 0.5rem 1.2rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 600;
+            transition: opacity 0.2s;
+        }
+        .nav-btn:hover { opacity: 0.85; }
+
+        /* Hero */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 8rem 2rem 4rem;
+            position: relative;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 1rem;
+            border-radius: 50px;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            margin-bottom: 2rem;
+        }
+
+        .badge-dot {
+            width: 6px;
+            height: 6px;
+            background: var(--green);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        h1 {
+            font-size: clamp(2.5rem, 6vw, 4.5rem);
+            font-weight: 800;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+            letter-spacing: -0.03em;
+        }
+
+        h1 .gradient {
+            background: linear-gradient(135deg, var(--accent), var(--cyan), var(--magenta));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero-sub {
+            font-size: 1.2rem;
+            color: var(--text-dim);
+            max-width: 600px;
+            margin-bottom: 3rem;
+        }
+
+        .hero-actions {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .btn {
+            padding: 0.8rem 2rem;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+            box-shadow: 0 0 30px var(--accent-glow);
+        }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 0 40px var(--accent-glow); }
+
+        .btn-secondary {
+            background: var(--bg-card);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-secondary:hover { border-color: var(--accent); }
+
+        /* Terminal */
+        .terminal {
+            max-width: 700px;
+            width: 100%;
+            margin: 4rem auto 0;
+            background: var(--bg-terminal);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            text-align: left;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.4);
+        }
+
+        .terminal-bar {
+            padding: 0.8rem 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .terminal-bar span:nth-child(1) { background: var(--red); }
+        .terminal-bar span:nth-child(2) { background: var(--yellow); }
+        .terminal-bar span:nth-child(3) { background: var(--green); }
+
+        .terminal-title {
+            margin-left: 0.5rem;
+            color: var(--text-dim);
+            font-size: 0.8rem;
+        }
+
+        .terminal-body {
+            padding: 1.5rem;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+            line-height: 1.8;
+            overflow-x: auto;
+        }
+
+        .terminal-body .prompt { color: var(--green); }
+        .terminal-body .cmd { color: var(--text); }
+        .terminal-body .flag { color: var(--yellow); }
+        .terminal-body .comment { color: var(--text-dim); }
+        .terminal-body .output { color: var(--text-dim); }
+        .terminal-body .accent { color: var(--accent); }
+        .terminal-body .success { color: var(--green); }
+
+        /* Features */
+        .section {
+            padding: 6rem 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .section-label {
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            color: var(--accent);
+            margin-bottom: 0.5rem;
+        }
+
+        .section h2 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            letter-spacing: -0.02em;
+        }
+
+        .section-desc {
+            color: var(--text-dim);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin-bottom: 3rem;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .feature-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 2rem;
+            transition: all 0.3s;
+        }
+
+        .feature-card:hover {
+            border-color: rgba(129, 140, 248, 0.3);
+            transform: translateY(-4px);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+        }
+
+        .feature-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.4rem;
+            margin-bottom: 1.2rem;
+        }
+
+        .feature-card h3 {
+            font-size: 1.15rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-card p {
+            color: var(--text-dim);
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+
+        .icon-wp { background: rgba(34, 211, 238, 0.1); color: var(--cyan); }
+        .icon-ssl { background: rgba(52, 211, 153, 0.1); color: var(--green); }
+        .icon-backup { background: rgba(129, 140, 248, 0.1); color: var(--accent); }
+        .icon-sftp { background: rgba(251, 191, 36, 0.1); color: var(--yellow); }
+        .icon-distro { background: rgba(192, 132, 252, 0.1); color: var(--magenta); }
+        .icon-proxy { background: rgba(248, 113, 113, 0.1); color: var(--red); }
+
+        /* Menu preview */
+        .menu-section {
+            padding: 6rem 2rem;
+            background: linear-gradient(180deg, transparent, rgba(17, 24, 39, 0.5), transparent);
+        }
+
+        .menu-grid {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            align-items: start;
+        }
+
+        .menu-text h2 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            letter-spacing: -0.02em;
+        }
+
+        .menu-text p {
+            color: var(--text-dim);
+            font-size: 1.05rem;
+            margin-bottom: 2rem;
+        }
+
+        .menu-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+        }
+
+        .menu-list li {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: var(--text-dim);
+            font-size: 0.95rem;
+        }
+
+        .menu-list .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        /* Distro section */
+        .distro-badges {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-top: 2rem;
+        }
+
+        .distro-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.6rem 1.2rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 0.9rem;
+        }
+
+        /* Install */
+        .install-section {
+            padding: 6rem 2rem;
+            text-align: center;
+        }
+
+        .install-box {
+            max-width: 600px;
+            margin: 2rem auto 0;
+        }
+
+        .copy-box {
+            display: flex;
+            align-items: center;
+            background: var(--bg-terminal);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1rem 1.5rem;
+            margin-bottom: 1rem;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .copy-box:hover { border-color: var(--accent); }
+
+        .copy-box code {
+            flex: 1;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--green);
+        }
+
+        .copy-box .copy-icon {
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            padding: 0.3rem 0.6rem;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+
+        .copy-box:hover .copy-icon { color: var(--accent); }
+
+        /* Footer */
+        footer {
+            padding: 3rem 2rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }
+
+        footer a { color: var(--accent); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .menu-grid { grid-template-columns: 1fr; }
+            .nav-links { display: none; }
+            .features-grid { grid-template-columns: 1fr; }
+            .hero { padding: 6rem 1.5rem 3rem; }
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="bg-mesh"></div>
+
+    <!-- Nav -->
+    <nav>
+        <div class="nav-logo">
+            <span>&gt;_</span> setup-site
+        </div>
+        <ul class="nav-links">
+            <li><a href="#features">Features</a></li>
+            <li><a href="#how-it-works">How it works</a></li>
+            <li><a href="#install">Install</a></li>
+        </ul>
+        <a href="https://github.com/SeanGSR/setup-site" class="nav-btn">GitHub</a>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero">
+        <div class="badge">
+            <span class="badge-dot"></span>
+            v2.1 &mdash; Now with backup system & remote sync
+        </div>
+        <h1>
+            Deploy sites<br>
+            <span class="gradient">from your terminal.</span>
+        </h1>
+        <p class="hero-sub">
+            One script to manage Nginx, WordPress, PHP, and reverse proxy sites.
+            SSL, SFTP, backups, and multi-distro support built in.
+        </p>
+        <div class="hero-actions">
+            <a href="#install" class="btn btn-primary">
+                <span>&gt;_</span> Quick Install
+            </a>
+            <a href="https://github.com/SeanGSR/setup-site" class="btn btn-secondary">
+                View on GitHub
+            </a>
+        </div>
+
+        <!-- Terminal Preview -->
+        <div class="terminal">
+            <div class="terminal-bar">
+                <span class="terminal-dot"></span>
+                <span class="terminal-dot"></span>
+                <span class="terminal-dot"></span>
+                <span class="terminal-title">bash &mdash; setup-site.sh</span>
+            </div>
+            <div class="terminal-body">
+                <div><span class="prompt">$</span> <span class="cmd">sudo bash setup-site.sh</span></div>
+                <br>
+                <div><span class="accent">  =================================================</span></div>
+                <div><span class="accent">    WEB SETUP SCRIPT  v2.1</span></div>
+                <div><span class="accent">    Nginx * WordPress * PHP * Reverse Proxy</span></div>
+                <div><span class="accent">  =================================================</span></div>
+                <br>
+                <div><span class="output">  ACTIONS</span></div>
+                <br>
+                <div>    <span class="success">1</span> <span class="output">| Create a new site</span></div>
+                <div>    <span style="color: var(--cyan);">2</span> <span class="output">| Edit a site</span></div>
+                <div>    <span style="color: var(--accent);">3</span> <span class="output">| List all sites</span></div>
+                <div>    <span class="flag">4</span> <span class="output">| Renew SSL certificates</span></div>
+                <div>    <span style="color: var(--magenta);">5</span> <span class="output">| Setup SSL auto-renewal</span></div>
+                <div>    <span class="output">6</span> <span class="output">| Backup Manager</span></div>
+                <div>    <span style="color: var(--red);">7</span> <span class="output">| Delete a site</span></div>
+                <div>    <span class="comment">8 | Exit</span></div>
+                <br>
+                <div>  <span class="success">&gt;</span> <span class="cmd">Choose an option [1-8]:</span> <span class="accent" style="animation: pulse 1s infinite;">_</span></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="section" id="features">
+        <p class="section-label">Features</p>
+        <h2>Everything you need.</h2>
+        <p class="section-desc">
+            From zero to production in minutes. Automated dependency installation, secure defaults, and smart configuration.
+        </p>
+
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon icon-wp">WP</div>
+                <h3>WordPress Ready</h3>
+                <p>Automated WordPress install with database creation, PHP-FPM pools, wp-config generation, security hardening, and ImageMagick for AVIF/WebP support.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon icon-ssl">S</div>
+                <h3>SSL &amp; Auto-Renewal</h3>
+                <p>Let's Encrypt certificates via Certbot with automatic systemd timer renewal. Zero-downtime nginx reload on cert updates.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon icon-backup">B</div>
+                <h3>Backup &amp; Restore</h3>
+                <p>Full site + database backups with configurable retention. Scheduled via systemd timers. Remote sync to Backblaze B2, S3, or any rsync/rclone target.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon icon-sftp">F</div>
+                <h3>SFTP Access</h3>
+                <p>Chroot-jailed SFTP users per site. Secure file access without giving shell access. Works with FileZilla and any SFTP client.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon icon-distro">A</div>
+                <h3>Multi-Distro</h3>
+                <p>Works on Debian, Ubuntu, Arch Linux, Manjaro, EndeavourOS, and more. Auto-detects package manager, paths, and service names.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon icon-proxy">R</div>
+                <h3>Reverse Proxy</h3>
+                <p>Proxy Node.js, Python, Go, or any backend through Nginx with WebSocket support, proper headers, and optional SSL termination.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="menu-section" id="how-it-works">
+        <div class="menu-grid">
+            <div class="menu-text">
+                <p class="section-label">How it works</p>
+                <h2>Simple workflow.</h2>
+                <p>Choose a site type, enter your domain, and the script handles everything else. Dependencies, configuration, permissions, and services.</p>
+                <ul class="menu-list">
+                    <li><span class="dot" style="background: var(--green);"></span> Pick site type: Static, WordPress, PHP, or Proxy</li>
+                    <li><span class="dot" style="background: var(--cyan);"></span> Enter domain &mdash; public or local (.local, .test)</li>
+                    <li><span class="dot" style="background: var(--accent);"></span> Auto-installs missing packages (nginx, PHP, MariaDB)</li>
+                    <li><span class="dot" style="background: var(--yellow);"></span> Creates nginx config, PHP-FPM pool, database</li>
+                    <li><span class="dot" style="background: var(--magenta);"></span> Sets up SSL certificate and SFTP user</li>
+                    <li><span class="dot" style="background: var(--green);"></span> Site is live and ready</li>
+                </ul>
+
+                <div class="distro-badges">
+                    <div class="distro-badge">
+                        <span style="color: var(--yellow);">&#9679;</span> Ubuntu / Debian
+                    </div>
+                    <div class="distro-badge">
+                        <span style="color: var(--cyan);">&#9679;</span> Arch Linux
+                    </div>
+                    <div class="distro-badge">
+                        <span style="color: var(--green);">&#9679;</span> Manjaro
+                    </div>
+                </div>
+            </div>
+
+            <div class="terminal" style="margin: 0;">
+                <div class="terminal-bar">
+                    <span class="terminal-dot"></span>
+                    <span class="terminal-dot"></span>
+                    <span class="terminal-dot"></span>
+                    <span class="terminal-title">Creating a WordPress site</span>
+                </div>
+                <div class="terminal-body">
+                    <div><span class="accent">  === Select Site Type ===</span></div>
+                    <br>
+                    <div>    <span class="success">1</span> <span class="output">| Static</span></div>
+                    <div>    <span style="color: var(--accent);">2</span> <span class="output">| WordPress</span></div>
+                    <div>    <span style="color: var(--magenta);">3</span> <span class="output">| PHP</span></div>
+                    <div>    <span class="flag">4</span> <span class="output">| Reverse Proxy</span></div>
+                    <br>
+                    <div>  <span class="success">&gt;</span> Choose: <span class="accent">2</span></div>
+                    <br>
+                    <div>  <span class="success">[ok]</span> <span class="output">Installing nginx...</span></div>
+                    <div>  <span class="success">[ok]</span> <span class="output">Installing PHP 8.3 + extensions...</span></div>
+                    <div>  <span class="success">[ok]</span> <span class="output">Installing MariaDB...</span></div>
+                    <div>  <span class="success">[ok]</span> <span class="output">Database created: mysite_com</span></div>
+                    <div>  <span class="success">[ok]</span> <span class="output">WordPress downloaded & configured</span></div>
+                    <div>  <span class="success">[ok]</span> <span class="output">PHP-FPM pool created</span></div>
+                    <div>  <span class="success">[ok]</span> <span class="output">Nginx config active</span></div>
+                    <div>  <span class="success">[ok]</span> <span class="output">SSL certificate issued</span></div>
+                    <br>
+                    <div><span class="success">  =================================================</span></div>
+                    <div><span class="success">    SITE SETUP COMPLETE</span></div>
+                    <div><span class="success">  =================================================</span></div>
+                    <br>
+                    <div>    <span class="output">URL</span>  | <span class="accent">https://mysite.com</span></div>
+                    <div>    <span class="output">Type</span> | <span class="cmd">wordpress</span></div>
+                    <div>    <span class="output">SSL</span>  | <span class="success">active</span></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Install -->
+    <section class="install-section" id="install">
+        <p class="section-label">Get started</p>
+        <h2>Install in seconds.</h2>
+        <p class="section-desc" style="margin: 1rem auto 2rem;">
+            Download the script, make it executable, and run it. That's it.
+        </p>
+
+        <div class="install-box">
+            <div class="copy-box" onclick="copyToClipboard(this, 'curl -O https://raw.githubusercontent.com/SeanGSR/setup-site/main/setup-site.sh')">
+                <code>curl -O https://raw.githubusercontent.com/SeanGSR/setup-site/main/setup-site.sh</code>
+                <span class="copy-icon">copy</span>
+            </div>
+            <div class="copy-box" onclick="copyToClipboard(this, 'chmod +x setup-site.sh && sudo bash setup-site.sh')">
+                <code>chmod +x setup-site.sh && sudo bash setup-site.sh</code>
+                <span class="copy-icon">copy</span>
+            </div>
+        </div>
+
+        <p style="color: var(--text-dim); font-size: 0.85rem; margin-top: 1.5rem;">
+            Requires: Linux (Debian/Ubuntu or Arch-based) &bull; Root access
+        </p>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <p>
+            Made with bash &mdash;
+            <a href="https://github.com/SeanGSR/setup-site">GitHub</a> &bull;
+            <a href="https://github.com/SeanGSR/setup-site/blob/main/LICENSE">MIT License</a>
+        </p>
+    </footer>
+
+    <script>
+        function copyToClipboard(el, text) {
+            navigator.clipboard.writeText(text).then(() => {
+                const icon = el.querySelector('.copy-icon');
+                icon.textContent = 'copied!';
+                icon.style.color = 'var(--green)';
+                setTimeout(() => {
+                    icon.textContent = 'copy';
+                    icon.style.color = '';
+                }, 2000);
+            });
+        }
+
+        // Smooth scroll
+        document.querySelectorAll('a[href^="#"]').forEach(a => {
+            a.addEventListener('click', e => {
+                e.preventDefault();
+                document.querySelector(a.getAttribute('href')).scrollIntoView({ behavior: 'smooth' });
+            });
+        });
+    </script>
+</body>
+</html>
