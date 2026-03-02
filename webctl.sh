@@ -32,8 +32,8 @@ SITES_ROOT="/home/${REAL_USER}/sites"
 BACKUP_ROOT="/home/${REAL_USER}/backups"
 BACKUP_RETENTION=7
 BACKUP_REMOTE_CONF="${SITES_ROOT}/.backup-remote.conf"
-LOG_FILE="/tmp/websetup.log"
-LOCK_FILE="/tmp/websetup.lock"
+LOG_FILE="/var/log/websetup.log"
+LOCK_FILE="/run/websetup.lock"
 
 # ── Distro Detection ────────────────────────────────────────
 DISTRO_FAMILY="unknown"
@@ -93,8 +93,7 @@ error() {
     local timestamp
     timestamp="$(date '+%H:%M:%S')"
     echo -e "  ${RED}${CROSS}${NC} ${DIM}${timestamp}${NC} ${RED}${BOLD}$1${NC}" | tee -a "$LOG_FILE"
-    cleanup_lock
-    exit 1
+    exit 1  # EXIT trap handles lock cleanup
 }
 
 info() {
@@ -196,7 +195,7 @@ validate_username() {
 add_to_hosts() {
     local domain="$1"
     local hosts_line="127.0.0.1   ${domain}"
-    if grep -q "^127\.0\.0\.1.*${domain}" /etc/hosts 2>/dev/null; then
+    if grep -qF "127.0.0.1   ${domain}" /etc/hosts 2>/dev/null; then
         log "${domain} already in /etc/hosts"
         return
     fi
@@ -232,8 +231,9 @@ fix_nsswitch_local() {
 
 remove_from_hosts() {
     local domain="$1"
-    if grep -q "${domain}" /etc/hosts 2>/dev/null; then
-        sed -i "/127\.0\.0\.1.*${domain}/d" /etc/hosts
+    local escaped="${domain//./\\.}"
+    if grep -q "127\.0\.0\.1.*${escaped}" /etc/hosts 2>/dev/null; then
+        sed -i "/^127\.0\.0\.1[[:space:]]\+${escaped}$/d" /etc/hosts
         log "Removed ${domain} from /etc/hosts"
     fi
 }
@@ -781,8 +781,11 @@ define('FS_METHOD', 'direct');" "${SITE_DIR}/public/wp-config.php"
             /put your unique phrase/ { print; print salts; next }
             { print }
         ' "${SITE_DIR}/public/wp-config.php" > "$tmp_conf"
-        mv "$tmp_conf" "${SITE_DIR}/public/wp-config.php"
-        log "WordPress security salts injected"
+        if ! mv "$tmp_conf" "${SITE_DIR}/public/wp-config.php"; then
+            warn "Failed to update wp-config.php with security salts. Check ${tmp_conf}"
+        else
+            log "WordPress security salts injected"
+        fi
     else
         warn "Could not fetch security salts. Update them manually in wp-config.php"
     fi
@@ -791,6 +794,8 @@ define('FS_METHOD', 'direct');" "${SITE_DIR}/public/wp-config.php"
     find "${SITE_DIR}/public" -type d -exec chmod 755 {} +
     find "${SITE_DIR}/public" -type f -exec chmod 644 {} +
     chown -R ${WEB_USER}:${WEB_USER} "${SITE_DIR}/public"
+    # Tighten wp-config.php — contains DB credentials and salts
+    chmod 640 "${SITE_DIR}/public/wp-config.php" 2>/dev/null || true
     log "WordPress installed successfully"
 }
 
@@ -823,7 +828,7 @@ create_static_placeholder() {
 <body>
   <div class="card">
     <h1>${DOMAIN}</h1>
-    <p>Your site is live! Upload your files to:<br><code>${SITE_DIR}/public/</code></p>
+    <p>Your site is live! Replace this page with your own content.</p>
   </div>
 </body>
 </html>
@@ -897,6 +902,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${SERVER_NAME_LINE};
+    server_tokens off;
 
     root ${SITE_DIR}/public;
     index index.html index.htm;
@@ -938,6 +944,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${SERVER_NAME_LINE};
+    server_tokens off;
 
     root ${SITE_DIR}/public;
     index index.php index.html;
@@ -1005,6 +1012,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${SERVER_NAME_LINE};
+    server_tokens off;
 
     root ${SITE_DIR}/public;
     index index.php index.html;
@@ -1044,6 +1052,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name ${SERVER_NAME_LINE};
+    server_tokens off;
 
     access_log ${SITE_DIR}/logs/access.log;
     error_log  ${SITE_DIR}/logs/error.log;
@@ -1052,6 +1061,8 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
+
+    client_max_body_size 100M;
 
     location / {
         proxy_pass         http://127.0.0.1:${PROXY_PORT};
@@ -1375,7 +1386,7 @@ define('FS_METHOD', 'direct');" "${UPLOAD_DIR}/wp-config.php"
 
     cat >> /etc/ssh/sshd_config <<EOF
 
-# SFTP jail for ${DOMAIN} — managed by setup-site.sh
+# SFTP jail for ${DOMAIN} — managed by webctl
 Match User ${ACCESS_USER}
     ChrootDirectory ${JAIL_DIR}
     ForceCommand internal-sftp -d /public
@@ -1782,7 +1793,13 @@ regenerate_nginx() {
     SITE_TYPE="$detected_type"
     IS_LOCAL=false
     SETUP_SSL=false
-    HANDLE_WWW=true
+
+    # Detect www handling from existing config
+    if [[ -f "$nginx_conf" ]] && grep -q "www\.${domain}" "$nginx_conf" 2>/dev/null; then
+        HANDLE_WWW=true
+    else
+        HANDLE_WWW=false
+    fi
 
     # Check if local
     if grep -q "127\.0\.0\.1.*${domain}" /etc/hosts 2>/dev/null; then
@@ -1965,8 +1982,11 @@ rename_domain() {
         local WP_PREFIX
         WP_PREFIX=$(grep -oP "\\\$table_prefix\s*=\s*['\"]\\K[^'\"]*" "$WP_CONF" 2>/dev/null || echo "wp_")
         [[ -z "$WP_PREFIX" ]] && WP_PREFIX="wp_"
-        mysql -e "UPDATE \`${DB_NAME}\`.${WP_PREFIX}options SET option_value='https://${NEW_DOMAIN}' WHERE option_name='siteurl';" 2>/dev/null || true
-        mysql -e "UPDATE \`${DB_NAME}\`.${WP_PREFIX}options SET option_value='https://${NEW_DOMAIN}' WHERE option_name='home';" 2>/dev/null || true
+        # Detect current protocol (http or https) from existing siteurl
+        local WP_PROTO
+        WP_PROTO=$(mysql -N -e "SELECT option_value FROM \`${DB_NAME}\`.${WP_PREFIX}options WHERE option_name='siteurl';" 2>/dev/null | grep -oP '^https?' || echo "http")
+        mysql -e "UPDATE \`${DB_NAME}\`.${WP_PREFIX}options SET option_value='${WP_PROTO}://${NEW_DOMAIN}' WHERE option_name='siteurl';" 2>/dev/null || true
+        mysql -e "UPDATE \`${DB_NAME}\`.${WP_PREFIX}options SET option_value='${WP_PROTO}://${NEW_DOMAIN}' WHERE option_name='home';" 2>/dev/null || true
         warn "WordPress URLs updated. Run Certbot again if you had HTTPS."
     fi
 
@@ -2016,7 +2036,6 @@ rename_domain() {
         remove_from_hosts "$OLD_DOMAIN"
         remove_from_hosts "www.${OLD_DOMAIN}"
         add_to_hosts "$NEW_DOMAIN"
-        is_local_domain "$OLD_DOMAIN" || true
         log "Updated /etc/hosts: ${OLD_DOMAIN} -> ${NEW_DOMAIN}"
     fi
 
@@ -2249,7 +2268,7 @@ define('FS_METHOD', 'direct');" "${SITE_DIR}/public/wp-config.php"
 
     cat >> /etc/ssh/sshd_config <<EOF
 
-# SFTP jail for ${DOMAIN} — managed by setup-site.sh
+# SFTP jail for ${DOMAIN} — managed by webctl
 Match User ${ACCESS_USER}
     ChrootDirectory ${SITE_DIR}
     ForceCommand internal-sftp -d /public
@@ -2424,7 +2443,9 @@ delete_site() {
                 userdel "$uname" 2>/dev/null && log "Removed user ${uname}" || true
             fi
         done
-        sshd -t 2>/dev/null && systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null 2>/dev/null || true
+        if sshd -t 2>/dev/null; then
+            systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+        fi
     fi
 
     # Remove nginx
@@ -2523,7 +2544,12 @@ MYCNF
     # Step 2: Tar the entire site directory
     info "Compressing site files..."
     tar -czf "$backup_file" -C "${SITES_ROOT}" "${domain}" 2>/dev/null &
-    spinner $! "Creating backup archive..."
+    if ! spinner $! "Creating backup archive..."; then
+        warn "Backup archive creation failed for ${domain}."
+        [[ -n "$db_dump" ]] && rm -f "$db_dump"
+        rm -f "$backup_file"
+        return 1
+    fi
 
     # Clean up temporary DB dump (it's inside the tar now)
     [[ -n "$db_dump" ]] && rm -f "$db_dump"
@@ -2856,7 +2882,7 @@ for site_dir in "\${SITES_ROOT}"/*/; do
         db_pass=\$(grep "DB Password:" "\${site_dir}/db-credentials.txt" | awk '{print \$NF}')
         if [[ -n "\$db_name" ]] && command -v mysqldump &>/dev/null; then
             mkdir -p "\${site_dir}/backups"
-            local my_cnf=\$(mktemp)
+            my_cnf=\$(mktemp)
             chmod 600 "\$my_cnf"
             printf '[client]\nuser=%s\npassword=%s\n' "\$db_user" "\$db_pass" > "\$my_cnf"
             mysqldump --defaults-extra-file="\$my_cnf" --single-transaction "\${db_name}" > "\${site_dir}/backups/db-\${timestamp}.sql" 2>/dev/null
